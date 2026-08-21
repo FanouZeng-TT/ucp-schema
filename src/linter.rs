@@ -280,12 +280,28 @@ fn check_examples(
             }
             for (key, child) in map {
                 // These keywords hold JSON instance data, not child schemas.
-                // Business fields named `examples` must not be linted as schemas.
-                if matches!(key.as_str(), "default" | "const" | "examples" | "enum") {
+                if matches!(
+                    key.as_str(),
+                    "default" | "const" | "examples" | "example" | "enum"
+                ) {
                     continue;
                 }
                 let child_path = pointer_path(path, key);
-                check_examples(child, root, file, &child_path, diagnostics);
+                if matches!(
+                    key.as_str(),
+                    "properties" | "patternProperties" | "$defs" | "definitions"
+                ) {
+                    // Values in schema maps are always schemas, even when their
+                    // property names collide with instance-data keywords above.
+                    if let Value::Object(schemas) = child {
+                        for (name, schema) in schemas {
+                            let schema_path = pointer_path(&child_path, name);
+                            check_examples(schema, root, file, &schema_path, diagnostics);
+                        }
+                    }
+                } else {
+                    check_examples(child, root, file, &child_path, diagnostics);
+                }
             }
         }
         Value::Array(items) => {
@@ -1176,6 +1192,7 @@ mod tests {
             "default": {{ "type": "string", "examples": [123] }},
             "const": {{ "type": "string", "examples": [123] }},
             "examples": [{{ "type": "string", "examples": [123] }}],
+            "example": {{ "type": "string", "examples": [123] }},
             "enum": [{{ "type": "string", "examples": [123] }}]
         }}"#
         )
@@ -1187,6 +1204,44 @@ mod tests {
             !result.diagnostics.iter().any(|d| d.code == "E008"),
             "instance data should not produce E008: {:?}",
             result.diagnostics
+        );
+    }
+
+    #[test]
+    fn lint_property_names_that_collide_with_instance_keywords() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"{{
+            "$id": "https://example.com/test.json",
+            "type": "object",
+            "properties": {{
+                "default": {{ "type": "string", "examples": [123] }},
+                "const": {{ "type": "string", "examples": [123] }},
+                "examples": {{ "type": "string", "examples": [123] }},
+                "example": {{ "type": "string", "examples": [123] }},
+                "enum": {{ "type": "string", "examples": [123] }}
+            }}
+        }}"#
+        )
+        .unwrap();
+
+        let result = lint_file(file.path(), file.path().parent().unwrap());
+        let paths: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "E008")
+            .map(|d| d.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/properties/default/examples/0",
+                "/properties/const/examples/0",
+                "/properties/examples/examples/0",
+                "/properties/example/examples/0",
+                "/properties/enum/examples/0",
+            ]
         );
     }
 
