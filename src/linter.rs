@@ -289,7 +289,11 @@ fn check_examples(
                 let child_path = pointer_path(path, key);
                 if matches!(
                     key.as_str(),
-                    "properties" | "patternProperties" | "$defs" | "definitions"
+                    "properties"
+                        | "patternProperties"
+                        | "$defs"
+                        | "definitions"
+                        | "dependentSchemas"
                 ) {
                     // Values in schema maps are always schemas, even when their
                     // property names collide with instance-data keywords above.
@@ -1221,6 +1225,9 @@ mod tests {
                 "examples": {{ "type": "string", "examples": [123] }},
                 "example": {{ "type": "string", "examples": [123] }},
                 "enum": {{ "type": "string", "examples": [123] }}
+            }},
+            "dependentSchemas": {{
+                "default": {{ "type": "string", "examples": [123] }}
             }}
         }}"#
         )
@@ -1241,6 +1248,7 @@ mod tests {
                 "/properties/examples/examples/0",
                 "/properties/example/examples/0",
                 "/properties/enum/examples/0",
+                "/dependentSchemas/default/examples/0",
             ]
         );
     }
