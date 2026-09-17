@@ -420,7 +420,7 @@ fn check_annotations(value: &Value, file: &Path, path: &str, diagnostics: &mut V
                     severity: Severity::Warning,
                     code: "W007".to_string(),
                     file: file.to_path_buf(),
-                    path: format!("{}/{}", path, key),
+                    path: pointer_path(path, key),
                     message: format!(
                         "{} is not a UCP annotation and has no effect; the ucp_ prefix is reserved (known: {})",
                         key,
@@ -1117,6 +1117,7 @@ mod tests {
                     "a/b~c": {
                         "type": "string",
                         "ucp_request": "invalid",
+                        "ucp_bad/key~name": "omit",
                         "examples": [123]
                     }
                 }
@@ -1127,6 +1128,7 @@ mod tests {
         let result = lint_file(&schema_path, dir.path());
         for (code, expected_path) in [
             ("E004", "/properties/a~1b~0c/ucp_request"),
+            ("W007", "/properties/a~1b~0c/ucp_bad~1key~0name"),
             ("E008", "/properties/a~1b~0c/examples/0"),
         ] {
             let diagnostic = result
