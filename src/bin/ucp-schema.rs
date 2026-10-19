@@ -9,9 +9,10 @@ use clap::{Parser, Subcommand};
 use ucp_schema::{
     bundle_refs, bundle_refs_with_url_mapping, compose_from_payload, compose_schema,
     detect_direction, extract_capabilities, extract_capabilities_from_profile,
-    extract_jsonrpc_payload, is_url, lint, load_schema, load_schema_auto, resolve,
-    select_operation_schema, validate, ComposeError, DetectedDirection, Direction, FileStatus,
-    ResolveError, ResolveOptions, SchemaBaseConfig, ValidateError,
+    extract_jsonrpc_payload, generate_types, is_url, lint, load_schema, load_schema_auto, resolve,
+    select_operation_schema, validate, CodegenError, ComposeError, DetectedDirection, Direction,
+    FileStatus, GenerateTypesOptions, ResolveError, ResolveOptions, SchemaBaseConfig,
+    ValidateError,
 };
 
 /// Errors with associated CLI exit codes.
@@ -28,6 +29,12 @@ impl CliExitCode for ResolveError {
 impl CliExitCode for ComposeError {
     fn exit_code(&self) -> u8 {
         ComposeError::exit_code(self) as u8
+    }
+}
+
+impl CliExitCode for CodegenError {
+    fn exit_code(&self) -> u8 {
+        CodegenError::exit_code(self) as u8
     }
 }
 
@@ -114,7 +121,8 @@ enum Commands {
         #[arg(long)]
         pretty: bool,
 
-        /// Dereference all $ref pointers (bundle into single schema; schema input only)
+        /// Materialize external $refs into a self-contained schema; recursive
+        /// references are retained with their resource identity (schema input only)
         #[arg(long)]
         bundle: bool,
 
@@ -236,6 +244,50 @@ enum Commands {
         #[arg(long, short)]
         quiet: bool,
     },
+
+    /// Generate a self-contained JSON Schema 2020-12 type bundle ($defs) from a UCP profile or capability set
+    #[command(name = "generate-types")]
+    GenerateTypes {
+        /// Path or URL to a UCP discovery profile (e.g. profile.json or https://allbirds.com/.well-known/ucp)
+        #[arg(long, short = 'p')]
+        profile: Option<String>,
+
+        /// Explicit capability FQDN to include in flag mode (repeatable or comma-separated, e.g. dev.ucp.shopping.checkout)
+        #[arg(
+            long = "capability",
+            alias = "capabilities",
+            value_delimiter = ',',
+            conflicts_with = "profile"
+        )]
+        capabilities: Vec<String>,
+
+        /// Explicit capability extension FQDN to include and compose in flag mode (repeatable or comma-separated, e.g. dev.ucp.shopping.fulfillment)
+        #[arg(
+            long = "extension",
+            alias = "extensions",
+            value_delimiter = ',',
+            conflicts_with = "profile"
+        )]
+        extensions: Vec<String>,
+
+        /// Local directory containing UCP JSON schema files (required in flag mode without --profile; optional local URL-mapping override when --profile is provided)
+        #[arg(long, short = 's', alias = "schema-local-base")]
+        schema_dir: Option<PathBuf>,
+
+        /// Output file path (emits JSON to stdout if omitted)
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+
+        /// Pretty-print JSON output (defaults to true; use --pretty=false for compact)
+        #[arg(
+            long,
+            default_value_t = true,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            action = clap::ArgAction::Set
+        )]
+        pretty: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -322,6 +374,22 @@ fn main() -> ExitCode {
             strict,
             quiet,
         } => run_lint(&path, &format, strict, quiet),
+
+        Commands::GenerateTypes {
+            profile,
+            capabilities,
+            extensions,
+            schema_dir,
+            output,
+            pretty,
+        } => run_generate_types(
+            profile,
+            capabilities,
+            extensions,
+            schema_dir,
+            output,
+            pretty,
+        ),
     };
 
     match result {
@@ -704,12 +772,38 @@ fn run_validate(args: ValidateArgs) -> Result<(), u8> {
             report_error(json_output, &e.to_string());
             Err(e.exit_code() as u8)
         }
+        // ValidateError is non_exhaustive: a variant added later must not stop
+        // this binary compiling. Report it and exit 2, matching the schema-error
+        // class the other arms use.
+        Err(e) => {
+            report_error(json_output, &e.to_string());
+            Err(2)
+        }
     }
 }
 
+fn run_generate_types(
+    profile: Option<String>,
+    capabilities: Vec<String>,
+    extensions: Vec<String>,
+    schema_dir: Option<PathBuf>,
+    output: Option<PathBuf>,
+    pretty: bool,
+) -> Result<(), u8> {
+    let options = GenerateTypesOptions {
+        profile,
+        capabilities: (!capabilities.is_empty()).then_some(capabilities),
+        extensions: (!extensions.is_empty()).then_some(extensions),
+        schema_dir,
+        ..GenerateTypesOptions::default()
+    };
+    let bundle = generate_types(&options).map_err(cli_err(false))?;
+    write_json_output(&bundle, output, pretty)
+}
+
 /// Shared helper: serialize JSON and write to output or stdout.
-fn write_json_output(
-    value: &serde_json::Value,
+fn write_json_output<T: serde::Serialize + ?Sized>(
+    value: &T,
     output: Option<PathBuf>,
     pretty: bool,
 ) -> Result<(), u8> {
@@ -845,9 +939,17 @@ fn run_lint(path: &Path, format: &str, strict: bool, quiet: bool) -> Result<(), 
 
         println!();
         if result.is_ok() && (!strict || result.warnings == 0) {
+            // Warnings do not fail a non-strict run, but omitting them from
+            // the summary lets a log tail read "all passed" while warnings
+            // scroll past above it.
+            let warnings = match result.warnings {
+                0 => String::new(),
+                1 => " (1 warning)".to_string(),
+                n => format!(" ({n} warnings)"),
+            };
             println!(
-                "\x1b[32m✓ {} files checked, all passed\x1b[0m",
-                result.files_checked
+                "\x1b[32m✓ {} files checked, all passed{}\x1b[0m",
+                result.files_checked, warnings
             );
         } else {
             println!(
