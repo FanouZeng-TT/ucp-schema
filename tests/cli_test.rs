@@ -1540,6 +1540,28 @@ mod lint_command {
         assert_eq!(output["errors"], 0);
         assert_eq!(output["results"].as_array().unwrap().len(), 1);
     }
+
+    #[test]
+    fn unsupported_format_fails_before_linting() {
+        let dir = TempDir::new().unwrap();
+        let schema = write_temp_file(
+            &dir,
+            "schema.json",
+            r#"{
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "https://example.com/schema.json",
+                "type": "string"
+            }"#,
+        );
+
+        cmd()
+            .args(["lint", schema.to_str().unwrap(), "--format", "yaml"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "unsupported lint output format: yaml",
+            ));
+    }
 }
 
 /// Compose subcommand tests — output composed schemas (annotations preserved)
